@@ -1,0 +1,8 @@
+{
+  "name": "Panel Advisor",
+  "blocks": {
+    "panel-advisor": {
+      "name": "Heating Panel Advisor"
+    }
+  }
+}

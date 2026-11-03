@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "panel-recommendation",
   "private": true,
   "scripts": {
     "build": "react-router build",
@@ -17,7 +17,8 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "typecheck": "react-router typegen && tsc --noEmit"
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "test:recommend": "npx tsx app/lib/recommend.check.ts"
   },
   "type": "module",
   "engines": {
@@ -68,6 +69,7 @@
     "@shopify/plugin-cloudflare"
   ],
   "overrides": {
-    "p-map": "^4.0.0"
+    "p-map": "^4.0.0",
+    "get-east-asian-width": "1.6.0"
   }
 }

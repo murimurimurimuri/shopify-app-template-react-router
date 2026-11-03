@@ -21,9 +21,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Heating Panel Advisor</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Recommend the right heating panel packages from room size and
+          insulation — largest panels first, combinations when needed.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -39,16 +40,16 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Storefront wizard</strong>. Friendly illustrated steps for
+            room size and insulation on a dedicated Online Store page.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Smart packages</strong>. At least three recommendations that
+            prefer larger panels and combine sizes when needed.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Admin setup</strong>. Pick the panels product, set watt
+            capacities, and tune insulation W/m² factors.
           </li>
         </ul>
       </div>

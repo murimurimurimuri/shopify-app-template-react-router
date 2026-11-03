@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" fill="none" aria-hidden="true">
+  <rect x="24" y="28" width="152" height="96" rx="8" stroke="currentColor" stroke-width="3" opacity="0.9"/>
+  <path d="M24 56h152" stroke="currentColor" stroke-width="2" opacity="0.35"/>
+  <rect x="40" y="68" width="48" height="40" rx="4" fill="currentColor" opacity="0.12"/>
+  <rect x="100" y="68" width="56" height="40" rx="4" fill="currentColor" opacity="0.08"/>
+  <circle cx="148" cy="44" r="6" fill="currentColor" opacity="0.25"/>
+  <text x="100" y="92" text-anchor="middle" font-family="system-ui,sans-serif" font-size="18" font-weight="700" fill="currentColor">m²</text>
+</svg>

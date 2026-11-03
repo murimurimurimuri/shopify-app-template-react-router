@@ -1,0 +1,201 @@
+{% liquid
+  assign pa_product = block.settings.product
+  if pa_product == blank and shop.metafields['$app'].panel_product_handle.value != blank
+    assign pa_product = all_products[shop.metafields['$app'].panel_product_handle.value]
+  endif
+
+  assign factor_poor = shop.metafields['$app'].insulation_poor_w_m2.value | default: 100
+  assign factor_average = shop.metafields['$app'].insulation_average_w_m2.value | default: 70
+  assign factor_good = shop.metafields['$app'].insulation_good_w_m2.value | default: 50
+  assign pa_heading = block.settings.heading | default: 'Size your panels'
+  assign pa_total_steps = 3
+
+  assign power_option_position = 0
+  if pa_product != blank
+    for product_option in pa_product.options_with_values
+      assign option_name_down = product_option.name | downcase | strip
+      if option_name_down == 'power'
+        assign power_option_position = forloop.index
+        break
+      endif
+    endfor
+  endif
+%}
+
+<div
+  class="panel-advisor"
+  data-panel-advisor
+  data-total-steps="{{ pa_total_steps }}"
+  style="--pa-ink: rgb(2, 9, 18); --pa-accent: #f0d8ac;"
+  {{ block.shopify_attributes }}
+>
+  {% if pa_product == blank %}
+    <header class="panel-advisor__header">
+      <p class="panel-advisor__eyebrow">Panel advisor</p>
+      <h2 class="panel-advisor__heading">{{ pa_heading }}</h2>
+    </header>
+    <div class="panel-advisor__body">
+      <div class="pa-empty" data-pa-empty>
+        <div class="pa-illu">{% render 'pa-illu-empty' %}</div>
+        <p class="panel-advisor__lede">
+          Select a heating panels product in this block’s settings (or configure one in the app admin) to activate the advisor.
+        </p>
+      </div>
+    </div>
+  {% else %}
+    <header class="panel-advisor__header">
+      <p class="panel-advisor__eyebrow" data-pa-step-label>Step 1 of {{ pa_total_steps }}</p>
+      <h2 class="panel-advisor__heading">{{ pa_heading }}</h2>
+      <ol class="panel-advisor__progress" aria-label="Advisor steps">
+        <li class="panel-advisor__progress-item is-current" data-pa-progress-step="1">
+          <button type="button" disabled title="Room" aria-current="step">1</button>
+        </li>
+        <li class="panel-advisor__progress-item" data-pa-progress-step="2">
+          <button type="button" disabled title="Insulation">2</button>
+        </li>
+        <li class="panel-advisor__progress-item" data-pa-progress-step="3">
+          <button type="button" disabled title="Panels">3</button>
+        </li>
+      </ol>
+    </header>
+
+    <div class="panel-advisor__body">
+      <div class="pa-empty" data-pa-empty hidden>
+        <div class="pa-illu">{% render 'pa-illu-empty' %}</div>
+        <h3>Almost ready</h3>
+        <p class="panel-advisor__lede">No variants with a Power option were found on this product.</p>
+      </div>
+
+      <section class="panel-advisor__step is-active" data-pa-step="1">
+        <div class="panel-advisor__step-header">
+          <div class="pa-illu">{% render 'pa-illu-room' %}</div>
+          <h3>How big is your room?</h3>
+          <p>Enter the floor area in square meters. We’ll size panels to match.</p>
+        </div>
+        <div class="panel-advisor__fields">
+          <label for="pa-room-{{ block.id }}">
+            Room size (m²)
+            <input
+              id="pa-room-{{ block.id }}"
+              type="number"
+              min="1"
+              step="0.1"
+              inputmode="decimal"
+              placeholder="e.g. 18"
+              data-pa-room
+            >
+          </label>
+        </div>
+      </section>
+
+      <section class="panel-advisor__step" data-pa-step="2" hidden>
+        <div class="panel-advisor__step-header">
+          <h3>How good is the insulation?</h3>
+          <p>Better insulation means less heating power is needed.</p>
+        </div>
+        <div class="panel-advisor__choices" role="group" aria-label="Insulation level">
+          <button type="button" class="panel-advisor__choice" data-pa-insulation="poor" aria-pressed="false">
+            <div class="pa-illu pa-illu--sm">{% render 'pa-illu-insulation-poor' %}</div>
+            <span class="panel-advisor__choice-title">Poor</span>
+            <span class="panel-advisor__choice-meta">{{ factor_poor }} W/m² · drafty or older windows</span>
+          </button>
+          <button type="button" class="panel-advisor__choice" data-pa-insulation="average" aria-pressed="false">
+            <div class="pa-illu pa-illu--sm">{% render 'pa-illu-insulation-average' %}</div>
+            <span class="panel-advisor__choice-title">Average</span>
+            <span class="panel-advisor__choice-meta">{{ factor_average }} W/m² · typical home</span>
+          </button>
+          <button type="button" class="panel-advisor__choice" data-pa-insulation="good" aria-pressed="false">
+            <div class="pa-illu pa-illu--sm">{% render 'pa-illu-insulation-good' %}</div>
+            <span class="panel-advisor__choice-title">Good</span>
+            <span class="panel-advisor__choice-meta">{{ factor_good }} W/m² · well sealed &amp; insulated</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="panel-advisor__step" data-pa-step="3" hidden>
+        <div class="panel-advisor__step-header">
+          <div class="pa-illu">{% render 'pa-illu-results' %}</div>
+          <h3>Your panel packages</h3>
+          <p>We prefer larger panels first, and combine sizes when one isn’t enough.</p>
+        </div>
+        <div class="panel-advisor__recommendation">
+          Estimated need: <strong data-pa-required>—</strong>
+        </div>
+        <div class="pa-results" data-pa-results></div>
+      </section>
+
+      <p class="panel-advisor__status" data-pa-status role="status" aria-live="polite"></p>
+
+      <div class="panel-advisor__nav" data-pa-footer>
+        <button type="button" class="panel-advisor__button panel-advisor__button--ghost" data-pa-back hidden>Back</button>
+        <button type="button" class="panel-advisor__button panel-advisor__button--ghost" data-pa-restart hidden>Start over</button>
+        <span class="panel-advisor__nav-spacer" data-pa-footer-spacer></span>
+        <button type="button" class="panel-advisor__button" data-pa-next>Continue</button>
+      </div>
+    </div>
+
+    <script type="application/json" data-pa-config>
+      {
+        "moneyFormat": {{ shop.money_format | json }},
+        "factors": {
+          "poor": {{ factor_poor | json }},
+          "average": {{ factor_average | json }},
+          "good": {{ factor_good | json }}
+        },
+        "variants": [
+          {%- assign first_variant = true -%}
+          {%- for variant in pa_product.variants -%}
+            {%- liquid
+              assign power_raw = blank
+              if power_option_position == 1
+                assign power_raw = variant.option1
+              elsif power_option_position == 2
+                assign power_raw = variant.option2
+              elsif power_option_position == 3
+                assign power_raw = variant.option3
+              endif
+              assign power_digits = power_raw | replace: ' ', '' | replace: 'W', '' | replace: 'w', '' | replace: ',', ''
+              assign capacity = power_digits | plus: 0
+            -%}
+            {%- if power_raw != blank and capacity > 0 -%}
+              {%- unless first_variant -%},{%- endunless -%}
+              {
+                "id": {{ variant.id | json }},
+                "title": {{ variant.title | json }},
+                "power": {{ power_raw | json }},
+                "watts": {{ capacity | json }},
+                "price": {{ variant.price | json }},
+                "available": {{ variant.available | json }},
+                "imageUrl": {% if variant.image %}{{ variant.image | image_url: width: 200 | json }}{% elsif pa_product.featured_image %}{{ pa_product.featured_image | image_url: width: 200 | json }}{% else %}null{% endif %}
+              }
+              {%- assign first_variant = false -%}
+            {%- endif -%}
+          {%- endfor -%}
+        ]
+      }
+    </script>
+  {% endif %}
+</div>
+
+{% schema %}
+{
+  "name": "Heating Panel Advisor",
+  "target": "section",
+  "stylesheet": "panel-advisor.css",
+  "javascript": "panel-advisor.js",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Size your panels"
+    },
+    {
+      "type": "product",
+      "id": "product",
+      "label": "Heating panels product",
+      "info": "Product must have a variant option named Power (e.g. 450, 700, 900)."
+    }
+  ]
+}
+{% endschema %}

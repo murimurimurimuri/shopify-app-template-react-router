@@ -1,249 +1,491 @@
-import { useEffect } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher } from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
+import { useCallback, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { DEFAULT_INSULATION_FACTORS, parsePowerWatts } from "../lib/recommend";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-
-  return null;
+type ShopConfig = {
+  panelProductId: string | null;
+  panelProductHandle: string | null;
+  insulationPoor: number;
+  insulationAverage: number;
+  insulationGood: number;
 };
 
-export const action = async ({ request }: ActionFunctionArgs) => {
+type VariantRow = {
+  id: string;
+  title: string;
+  powerLabel: string | null;
+  watts: number | null;
+};
+
+type ProductSummary = {
+  id: string;
+  title: string;
+  handle: string;
+  hasPowerOption: boolean;
+  variants: VariantRow[];
+} | null;
+
+function parseIntOr(
+  value: string | number | null | undefined,
+  fallback: number,
+): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+}
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
+
+  const shopResponse = await admin.graphql(
     `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
+      query PanelAdvisorShopConfig {
+        shop {
+          id
+          panelProductId: metafield(key: "panel_product_id") {
+            value
+          }
+          panelProductHandle: metafield(key: "panel_product_handle") {
+            value
+          }
+          insulationPoor: metafield(key: "insulation_poor_w_m2") {
+            value
+          }
+          insulationAverage: metafield(key: "insulation_average_w_m2") {
+            value
+          }
+          insulationGood: metafield(key: "insulation_good_w_m2") {
+            value
+          }
+        }
+      }`,
+  );
+
+  const shopJson = await shopResponse.json();
+  const shop = shopJson.data?.shop;
+
+  const config: ShopConfig = {
+    panelProductId: shop?.panelProductId?.value ?? null,
+    panelProductHandle: shop?.panelProductHandle?.value ?? null,
+    insulationPoor: parseIntOr(
+      shop?.insulationPoor?.value,
+      DEFAULT_INSULATION_FACTORS.poor,
+    ),
+    insulationAverage: parseIntOr(
+      shop?.insulationAverage?.value,
+      DEFAULT_INSULATION_FACTORS.average,
+    ),
+    insulationGood: parseIntOr(
+      shop?.insulationGood?.value,
+      DEFAULT_INSULATION_FACTORS.good,
+    ),
+  };
+
+  let product: ProductSummary = null;
+
+  if (config.panelProductId) {
+    const productResponse = await admin.graphql(
+      `#graphql
+        query PanelAdvisorProduct($id: ID!) {
+          product(id: $id) {
             id
             title
             handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
+            options {
+              name
+            }
+            variants(first: 50) {
+              nodes {
+                id
+                title
+                selectedOptions {
+                  name
+                  value
                 }
               }
             }
           }
-        }
+        }`,
+      { variables: { id: config.panelProductId } },
+    );
+    const productJson = await productResponse.json();
+    const p = productJson.data?.product;
+    if (p) {
+      const hasPowerOption = (p.options ?? []).some(
+        (opt: { name: string }) => opt.name.trim().toLowerCase() === "power",
+      );
+      product = {
+        id: p.id,
+        title: p.title,
+        handle: p.handle,
+        hasPowerOption,
+        variants: (p.variants?.nodes ?? []).map(
+          (v: {
+            id: string;
+            title: string;
+            selectedOptions?: { name: string; value: string }[];
+          }) => {
+            const powerOpt = (v.selectedOptions ?? []).find(
+              (opt) => opt.name.trim().toLowerCase() === "power",
+            );
+            return {
+              id: v.id,
+              title: v.title,
+              powerLabel: powerOpt?.value ?? null,
+              watts: parsePowerWatts(powerOpt?.value),
+            };
+          },
+        ),
+      };
+    }
+  }
+
+  const powersFilled =
+    !!product &&
+    product.hasPowerOption &&
+    product.variants.length > 0 &&
+    product.variants.every((v) => v.watts != null && v.watts > 0);
+
+  return { config, product, powersFilled };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { admin } = await authenticate.admin(request);
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  const shopResponse = await admin.graphql(
+    `#graphql
+      query ShopId {
+        shop { id }
       }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
+  );
+  const shopJson = await shopResponse.json();
+  const shopId = shopJson.data?.shop?.id as string;
+
+  if (intent === "save_product") {
+    const productId = String(formData.get("productId") || "");
+    const productHandle = String(formData.get("productHandle") || "");
+    if (!productId) {
+      return { ok: false, error: "Select a product first." };
+    }
+
+    const response = await admin.graphql(
+      `#graphql
+        mutation SavePanelProduct($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors { field message }
+          }
+        }`,
+      {
+        variables: {
+          metafields: [
+            {
+              ownerId: shopId,
+              key: "panel_product_id",
+              type: "single_line_text_field",
+              value: productId,
+            },
+            {
+              ownerId: shopId,
+              key: "panel_product_handle",
+              type: "single_line_text_field",
+              value: productHandle,
+            },
+          ],
         },
       },
-    },
-  );
-  const responseJson = await response.json();
+    );
+    const json = await response.json();
+    const errors = json.data?.metafieldsSet?.userErrors ?? [];
+    if (errors.length) {
+      return {
+        ok: false,
+        error: errors.map((e: { message: string }) => e.message).join(", "),
+      };
+    }
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
+    return { ok: true, message: "Heating panels product saved." };
+  }
 
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
+  if (intent === "save_insulation") {
+    const poor = parseIntOr(
+      String(formData.get("insulationPoor")),
+      DEFAULT_INSULATION_FACTORS.poor,
+    );
+    const average = parseIntOr(
+      String(formData.get("insulationAverage")),
+      DEFAULT_INSULATION_FACTORS.average,
+    );
+    const good = parseIntOr(
+      String(formData.get("insulationGood")),
+      DEFAULT_INSULATION_FACTORS.good,
+    );
+
+    const response = await admin.graphql(
+      `#graphql
+        mutation SaveInsulation($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors { field message }
+          }
+        }`,
+      {
+        variables: {
+          metafields: [
+            {
+              ownerId: shopId,
+              key: "insulation_poor_w_m2",
+              type: "number_integer",
+              value: String(poor),
+            },
+            {
+              ownerId: shopId,
+              key: "insulation_average_w_m2",
+              type: "number_integer",
+              value: String(average),
+            },
+            {
+              ownerId: shopId,
+              key: "insulation_good_w_m2",
+              type: "number_integer",
+              value: String(good),
+            },
+          ],
+        },
       },
-    },
-  );
+    );
+    const json = await response.json();
+    const errors = json.data?.metafieldsSet?.userErrors ?? [];
+    if (errors.length) {
+      return {
+        ok: false,
+        error: errors.map((e: { message: string }) => e.message).join(", "),
+      };
+    }
 
-  const variantResponseJson = await variantResponse.json();
+    return { ok: true, message: "Insulation factors saved." };
+  }
 
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-  };
+  return { ok: false, error: "Unknown action." };
 };
 
 export default function Index() {
-  const fetcher = useFetcher<typeof action>();
-
+  const { config, product, powersFilled } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
   const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
+  const [selectedProduct, setSelectedProduct] = useState<{
+    id: string;
+    handle: string;
+    title: string;
+  } | null>(
+    product
+      ? { id: product.id, handle: product.handle, title: product.title }
+      : null,
+  );
 
-  useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
-    }
-  }, [fetcher.data?.product?.id, shopify]);
+  const busy = navigation.state !== "idle";
 
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const pickProduct = useCallback(async () => {
+    const selected = await shopify.resourcePicker({
+      type: "product",
+      multiple: false,
+      action: "select",
+      selectionIds: selectedProduct?.id
+        ? [{ id: selectedProduct.id }]
+        : undefined,
+    });
+    if (!selected || selected.length === 0) return;
+    const p = selected[0] as { id: string; handle: string; title: string };
+    setSelectedProduct({ id: p.id, handle: p.handle, title: p.title });
+  }, [shopify, selectedProduct?.id]);
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
+    <s-page heading="Heating Panel Advisor">
+      {actionData && "message" in actionData && actionData.message ? (
+        <s-banner tone="success" heading={actionData.message} />
+      ) : null}
+      {actionData && "error" in actionData && actionData.error ? (
+        <s-banner tone="critical" heading={actionData.error} />
+      ) : null}
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
+      <s-section heading="Setup checklist">
+        <s-unordered-list>
+          <s-list-item>
+            {product ? "✓" : "○"} Select the heating panels product
+          </s-list-item>
+          <s-list-item>
+            {powersFilled ? "✓" : "○"} Product has a Power option with watt
+            values on each variant
+          </s-list-item>
+          <s-list-item>
+            ○ Create an Online Store page and add the “Heating Panel Advisor”
+            app block
+          </s-list-item>
+        </s-unordered-list>
       </s-section>
-      <s-section heading="Get started with products">
+
+      <s-section heading="1. Heating panels product">
         <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references.
+          Choose the product whose variants use an option named{" "}
+          <strong>Power</strong> (for example 450, 700, 900). The advisor
+          reads watts from that option — no capacity metafield needed.
         </s-paragraph>
         <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
+          <s-button onClick={pickProduct}>
+            {selectedProduct ? "Change product" : "Select product"}
           </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
+          {selectedProduct ? (
+            <s-text>
+              {selectedProduct.title} ({selectedProduct.handle})
+            </s-text>
+          ) : (
+            <s-text>No product selected yet.</s-text>
           )}
         </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
+        <Form method="post">
+          <input type="hidden" name="intent" value="save_product" />
+          <input
+            type="hidden"
+            name="productId"
+            value={selectedProduct?.id ?? ""}
+          />
+          <input
+            type="hidden"
+            name="productHandle"
+            value={selectedProduct?.handle ?? ""}
+          />
+          <s-button
+            type="submit"
+            variant="primary"
+            {...(busy || !selectedProduct ? { disabled: true } : {})}
+          >
+            Save product
+          </s-button>
+        </Form>
+      </s-section>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-            </s-stack>
-          </s-section>
+      <s-section heading="2. Insulation factors (W/m²)">
+        <s-paragraph>
+          Required watts = room m² × factor. Defaults: Poor 100 / Average 70 /
+          Good 50.
+        </s-paragraph>
+        <Form method="post">
+          <input type="hidden" name="intent" value="save_insulation" />
+          <s-stack direction="block" gap="base">
+            <label>
+              <span>Poor insulation (W/m²)</span>
+              <input
+                type="number"
+                name="insulationPoor"
+                min={1}
+                defaultValue={String(config.insulationPoor)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "0.35rem",
+                  padding: "0.5rem 0.75rem",
+                  font: "inherit",
+                }}
+              />
+            </label>
+            <label>
+              <span>Average insulation (W/m²)</span>
+              <input
+                type="number"
+                name="insulationAverage"
+                min={1}
+                defaultValue={String(config.insulationAverage)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "0.35rem",
+                  padding: "0.5rem 0.75rem",
+                  font: "inherit",
+                }}
+              />
+            </label>
+            <label>
+              <span>Good insulation (W/m²)</span>
+              <input
+                type="number"
+                name="insulationGood"
+                min={1}
+                defaultValue={String(config.insulationGood)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  marginTop: "0.35rem",
+                  padding: "0.5rem 0.75rem",
+                  font: "inherit",
+                }}
+              />
+            </label>
+            <s-button
+              type="submit"
+              variant="primary"
+              {...(busy ? { disabled: true } : {})}
+            >
+              Save insulation factors
+            </s-button>
+          </s-stack>
+        </Form>
+      </s-section>
+
+      <s-section heading="3. Power option on variants">
+        {!product ? (
+          <s-paragraph>Save a product first to preview Power values.</s-paragraph>
+        ) : !product.hasPowerOption ? (
+          <s-banner
+            tone="warning"
+            heading="This product has no option named Power"
+          >
+            In Shopify Admin → Products, add a variant option called Power with
+            watt values (e.g. 450, 700, 900).
+          </s-banner>
+        ) : (
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              Values below are read from the product’s Power option (edit them on
+              the product in Shopify Admin).
+            </s-paragraph>
+            {product.variants.map((variant) => (
+              <s-text key={variant.id}>
+                {variant.title}: {variant.powerLabel ?? "—"}
+                {variant.watts != null ? ` → ${variant.watts} W` : " (invalid watts)"}
+              </s-text>
+            ))}
+          </s-stack>
         )}
       </s-section>
 
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
-        <s-unordered-list>
+      <s-section heading="4. Add the wizard to your storefront">
+        <s-ordered-list>
           <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
+            In Shopify admin, go to Online Store → Pages → Add page (for example
+            “Heating advisor”).
           </s-list-item>
           <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
+            Click Add section / Add block and choose Heating Panel Advisor from
+            your app.
           </s-list-item>
-        </s-unordered-list>
+          <s-list-item>
+            In the block settings, select the same heating panels product, then
+            save and publish the page.
+          </s-list-item>
+        </s-ordered-list>
+        <s-paragraph>
+          Shoppers open that page, enter room size and insulation, and get at
+          least three panel packages (largest panels preferred, combinations when
+          needed).
+        </s-paragraph>
       </s-section>
     </s-page>
   );
